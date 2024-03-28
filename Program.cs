@@ -1,107 +1,120 @@
 ﻿using System;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-class Client
+class Server
 {
     static void Main(string[] args)
     {
         try
         {
-            TcpClient client = new TcpClient("localhost", 8888);
-            Console.WriteLine("Connected to the server...");
+            TcpListener server = new TcpListener(IPAddress.Any, 8888);
+            server.Start();
+            Console.WriteLine("Server started!");
 
-            Console.Write("Enter action (1 - get a file, 2 - create a file, 3 - delete a file): > ");
-            string actionInput = Console.ReadLine();
-
-            if (actionInput == "exit")
+            string dataDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "server", "data");
+            if (!Directory.Exists(dataDirectory))
             {
-                SendRequest(client.GetStream(), "exit", "");
-                client.Close();
+                Directory.CreateDirectory(dataDirectory);
+                Console.WriteLine("Data directory created: " + dataDirectory);
             }
-            else if (actionInput == "1" || actionInput == "2" || actionInput == "3")
-            {
-                string action = actionInput == "1" ? "GET" : actionInput == "2" ? "PUT" : "DELETE";
 
-                Console.Write("Enter filename: > ");
-                string fileName = Console.ReadLine();
-                string fileContent = "";
+            while (true)
+            {
+                TcpClient client = server.AcceptTcpClient();
+                Console.WriteLine("Client connected!");
+
+                NetworkStream stream = client.GetStream();
+
+                byte[] data = new byte[1024];
+                int bytesRead = stream.Read(data, 0, data.Length);
+                string request = Encoding.ASCII.GetString(data, 0, bytesRead);
+                Console.WriteLine("Request received: " + request);
+
+                string[] parts = request.Split(' ');
+                string action = parts[0];
+
+                if (action == "exit")
+                {
+                    string exitResponse = "200 Server stopped";
+                    byte[] exitResponseData = Encoding.ASCII.GetBytes(exitResponse);
+                    stream.Write(exitResponseData, 0, exitResponseData.Length);
+                    Console.WriteLine("Response sent: " + exitResponse);
+                    server.Stop();
+                    Console.WriteLine("Server stopped!");
+                    break;
+                }
+
+                string fileName = parts[1].Split('=')[0];
+                string fileContent = parts.Length > 1 ? parts[1].Substring(fileName.Length + 1) : "";
+
+                string response = "";
+
+                string filePath = Path.Combine(dataDirectory, fileName);
 
                 if (action == "PUT")
                 {
-                    Console.Write("Enter file content: > ");
-                    fileContent = Console.ReadLine();
-                }
-
-                SendRequest(client.GetStream(), action, $"{fileName}={fileContent}");
-
-                // Обработка ответа сервера
-                byte[] responseData = new byte[1024];
-                int bytesRead = client.GetStream().Read(responseData, 0, responseData.Length);
-                string response = Encoding.ASCII.GetString(responseData, 0, bytesRead);
-
-                // Вывод сообщения в зависимости от действия и кода ответа сервера
-                if (action == "GET")
-                {
-                    if (response.StartsWith("200"))
+                    if (File.Exists(filePath))
                     {
-                        Console.WriteLine("The content of the file is: " + response.Substring(4));
+                        response = "403 Forbidden";
                     }
                     else
                     {
-                        Console.WriteLine("The response says: " + response);
+                        try
+                        {
+                            File.WriteAllText(filePath, fileContent);
+                            response = "200 File created";
+                        }
+                        catch (Exception)
+                        {
+                            response = "500 Internal Server Error";
+                        }
                     }
                 }
-                else if (action == "PUT")
+                else if (action == "GET")
                 {
-                    if (response.StartsWith("200"))
+                    if (File.Exists(filePath))
                     {
-                        Console.WriteLine("The response says that the file was created!");
-                    }
-                    else if (response.StartsWith("403"))
-                    {
-                        Console.WriteLine("The response says that creating the file was forbidden!");
+                        fileContent = File.ReadAllText(filePath);
+                        response = $"200 {fileContent}";
                     }
                     else
                     {
-                        Console.WriteLine("Unexpected response: " + response);
+                        response = "404 File not found";
                     }
                 }
                 else if (action == "DELETE")
                 {
-                    if (response.StartsWith("200"))
+                    if (File.Exists(filePath))
                     {
-                        Console.WriteLine("The response says that the file was successfully deleted!");
-                    }
-                    else if (response.StartsWith("404"))
-                    {
-                        Console.WriteLine("The response says that the file was not found!");
+                        File.Delete(filePath);
+                        response = "200 File deleted";
                     }
                     else
                     {
-                        Console.WriteLine("Unexpected response: " + response);
+                        response = "404 File not found";
                     }
                 }
-            }
-            else
-            {
-                Console.WriteLine("Invalid action. Please enter 1, 2, 3, or exit.");
-            }
+                else
+                {
+                    response = "400 Bad Request";
+                }
 
-            Console.WriteLine("Connection closed.");
+                byte[] responseData = Encoding.ASCII.GetBytes(response);
+                stream.Write(responseData, 0, responseData.Length);
+                Console.WriteLine("Response sent: " + response);
+
+                // Отключение клиента
+                stream.Close();
+                client.Close();
+                Console.WriteLine("Client disconnected!");
+            }
         }
         catch (Exception ex)
         {
             Console.WriteLine("Error: " + ex.Message);
         }
-    }
-
-    static void SendRequest(NetworkStream stream, string action, string data)
-    {
-        string request = $"{action} {data}";
-        byte[] requestData = Encoding.ASCII.GetBytes(request);
-        stream.Write(requestData, 0, requestData.Length);
-        Console.WriteLine("The request was sent.");
     }
 }
